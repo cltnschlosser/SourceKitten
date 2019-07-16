@@ -14,21 +14,19 @@ import SourceKit
 // MARK: - SourceKitObjectConvertible
 
 public protocol SourceKitObjectConvertible {
-    var sourcekitdObject: sourcekitd_object_t? { get }
+    var sourcekitdObject: SourceKitObject? { get }
 }
 
-extension Array: SourceKitObjectConvertible {
-    public var sourcekitdObject: sourcekitd_object_t? {
-        guard Element.self is SourceKitObjectConvertible.Type else {
-            fatalError("Array conforms to SourceKitObjectConvertible when Elements is SourceKitObjectConvertible!")
-        }
-        let objects: [sourcekitd_object_t?] = map { ($0 as! SourceKitObjectConvertible).sourcekitdObject }
-        return sourcekitd_request_array_create(objects, objects.count)
+extension Array: SourceKitObjectConvertible where Element: SourceKitObjectConvertible {
+    public var sourcekitdObject: SourceKitObject? {
+        let sourceKitObjects = map { $0.sourcekitdObject }
+        let objects: [sourcekitd_object_t?] = sourceKitObjects.map { $0?._sourcekitdObject }
+        return sourcekitd_request_array_create(objects, objects.count).map { SourceKitObject($0, otherToRetain: sourceKitObjects)}
     }
 }
 
-extension Dictionary: SourceKitObjectConvertible {
-    public var sourcekitdObject: sourcekitd_object_t? {
+extension Dictionary: SourceKitObjectConvertible where Value: SourceKitObjectConvertible {
+    public var sourcekitdObject: SourceKitObject? {
         let keys: [sourcekitd_uid_t?]
         if Key.self is UID.Type {
             keys = self.keys.map { ($0 as! UID).uid }
@@ -37,40 +35,49 @@ extension Dictionary: SourceKitObjectConvertible {
         } else {
             fatalError("Dictionary conforms to SourceKitObjectConvertible when `Key` is `UID` or `String`!")
         }
-        guard Value.self is SourceKitObjectConvertible.Type else {
-            fatalError("Dictionary conforms to SourceKitObjectConvertible when `Value` is `SourceKitObjectConvertible`!")
-        }
-        let values: [sourcekitd_object_t?] = self.map { ($0.value as! SourceKitObjectConvertible).sourcekitdObject }
-        return sourcekitd_request_dictionary_create(keys, values, count)
+        let sourceKitObjects = values.map { $0.sourcekitdObject }
+        let values: [sourcekitd_object_t?] = sourceKitObjects.map { $0?._sourcekitdObject }
+        return sourcekitd_request_dictionary_create(keys, values, count).map { SourceKitObject($0, otherToRetain: sourceKitObjects) }
     }
 }
 
 extension Int: SourceKitObjectConvertible {
-    public var sourcekitdObject: sourcekitd_object_t? {
-        return sourcekitd_request_int64_create(Int64(self))
+    public var sourcekitdObject: SourceKitObject? {
+        return sourcekitd_request_int64_create(Int64(self)).map(SourceKitObject.init)
     }
 }
 
 extension Int64: SourceKitObjectConvertible {
-    public var sourcekitdObject: sourcekitd_object_t? {
-        return sourcekitd_request_int64_create(self)
+    public var sourcekitdObject: SourceKitObject? {
+        return sourcekitd_request_int64_create(self).map(SourceKitObject.init)
     }
 }
 
 extension String: SourceKitObjectConvertible {
-    public var sourcekitdObject: sourcekitd_object_t? {
-        return sourcekitd_request_string_create(self)
+    public var sourcekitdObject: SourceKitObject? {
+        return sourcekitd_request_string_create(self).map(SourceKitObject.init)
     }
 }
 
 // MARK: - SourceKitObject
 
 /// Swift representation of sourcekitd_object_t
-public struct SourceKitObject {
-    public let sourcekitdObject: sourcekitd_object_t?
+public final class SourceKitObject {
+    let _sourcekitdObject: sourcekitd_object_t
+    
+    private let otherToRetain: [SourceKitObject?]
+    
+    convenience init(_ sourcekitdObject: sourcekitd_object_t) {
+        self.init(sourcekitdObject, otherToRetain: [])
+    }
 
-    public init(_ sourcekitdObject: sourcekitd_object_t) {
-        self.sourcekitdObject = sourcekitdObject
+    init(_ sourcekitdObject: sourcekitd_object_t, otherToRetain: [SourceKitObject?]) {
+        self._sourcekitdObject = sourcekitdObject
+        self.otherToRetain = otherToRetain
+    }
+    
+    deinit {
+        sourcekitd_request_release(_sourcekitdObject)
     }
 
     /// Updates the value stored in the dictionary for the given key,
@@ -81,9 +88,7 @@ public struct SourceKitObject {
     ///   - key: The key to associate with value. If key already exists in the dictionary, 
     ///     value replaces the existing associated value. If key isn't already a key of the dictionary
     public func updateValue(_ value: SourceKitObjectConvertible, forKey key: UID) {
-        precondition(sourcekitdObject != nil)
-        precondition(value.sourcekitdObject != nil)
-        sourcekitd_request_dictionary_set_value(sourcekitdObject!, key.uid, value.sourcekitdObject!)
+        sourcekitd_request_dictionary_set_value(_sourcekitdObject, key.uid, value.sourcekitdObject!._sourcekitdObject)
     }
 
     public func updateValue(_ value: SourceKitObjectConvertible, forKey key: String) {
@@ -95,39 +100,43 @@ public struct SourceKitObject {
     }
 }
 
-extension SourceKitObject: SourceKitObjectConvertible {}
+extension SourceKitObject: SourceKitObjectConvertible {
+    public var sourcekitdObject: SourceKitObject? {
+        return self
+    }
+}
 
 extension SourceKitObject: CustomStringConvertible {
     public var description: String {
-        guard let object = sourcekitdObject else { return "" }
-        let bytes = sourcekitd_request_description_copy(object)!
+        let bytes = sourcekitd_request_description_copy(_sourcekitdObject)!
         let length = Int(strlen(bytes))
         return String(bytesNoCopy: bytes, length: length, encoding: .utf8, freeWhenDone: true)!
     }
 }
 
-extension SourceKitObject: ExpressibleByArrayLiteral {
-    public init(arrayLiteral elements: SourceKitObject...) {
-        sourcekitdObject = elements.sourcekitdObject
-    }
-}
+//extension SourceKitObject: ExpressibleByArrayLiteral {
+//    public convenience init(arrayLiteral elements: SourceKitObject...) {
+//        self.init(elements.sourcekitdObject)
+//    }
+//}
 
 extension SourceKitObject: ExpressibleByDictionaryLiteral {
-    public init(dictionaryLiteral elements: (UID, SourceKitObjectConvertible)...) {
+    public convenience init(dictionaryLiteral elements: (UID, SourceKitObjectConvertible)...) {
         let keys: [sourcekitd_uid_t?] = elements.map { $0.0.uid }
-        let values: [sourcekitd_object_t?] = elements.map { $0.1.sourcekitdObject }
-        sourcekitdObject = sourcekitd_request_dictionary_create(keys, values, elements.count)
+        let sourceKitObjects = elements.map { $0.1.sourcekitdObject }
+        let values: [sourcekitd_object_t?] = sourceKitObjects.map { $0?._sourcekitdObject }
+        self.init(sourcekitd_request_dictionary_create(keys, values, elements.count)!, otherToRetain: sourceKitObjects)
     }
 }
 
-extension SourceKitObject: ExpressibleByIntegerLiteral {
-    public init(integerLiteral value: IntegerLiteralType) {
-        sourcekitdObject = value.sourcekitdObject
-    }
-}
-
-extension SourceKitObject: ExpressibleByStringLiteral {
-    public init(stringLiteral value: StringLiteralType) {
-       sourcekitdObject = value.sourcekitdObject
-    }
-}
+//extension SourceKitObject: ExpressibleByIntegerLiteral {
+//    public convenience init(integerLiteral value: IntegerLiteralType) {
+//        self.init(value.sourcekitdObject)
+//    }
+//}
+//
+//extension SourceKitObject: ExpressibleByStringLiteral {
+//    public convenience init(stringLiteral value: StringLiteralType) {
+//       self.init(value.sourcekitdObject)
+//    }
+//}

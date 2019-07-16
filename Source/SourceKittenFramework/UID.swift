@@ -43,7 +43,7 @@ extension UID: ExpressibleByStringLiteral {
 }
 
 extension UID: SourceKitObjectConvertible {
-    public var sourcekitdObject: sourcekitd_object_t? {
-        return sourcekitd_request_uid_create(uid)
+    public var sourcekitdObject: SourceKitObject? {
+        return sourcekitd_request_uid_create(uid).map(SourceKitObject.init)
     }
 }
